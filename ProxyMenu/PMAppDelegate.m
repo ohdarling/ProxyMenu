@@ -8,7 +8,29 @@
 
 #import "PMAppDelegate.h"
 
-@implementation PMAppDelegate
+#import "ProxyInfo.h"
+
+#define kProxyPAC       @"PAC"
+#define kProxySOCKS     @"SOCKS"
+#define kProxyHTTP      @"HTTP"
+
+static AuthorizationRef authRef;
+static AuthorizationFlags authFlags;
+
+
+@interface PMAppDelegate ()
+@property (nonatomic, strong)   ProxyInfo       *selectedProxy;
+@end
+
+
+@implementation PMAppDelegate {
+    IBOutlet    NSMenu                  *statusItemMenu;
+    IBOutlet    NSArrayController       *proxiesArrayController;
+    
+    NSStatusItem                        *statusItem;
+    
+    NSMutableDictionary                 *previousDeviceProxies;
+}
 
 @synthesize persistentStoreCoordinator = _persistentStoreCoordinator;
 @synthesize managedObjectModel = _managedObjectModel;
@@ -16,15 +38,223 @@
 
 - (void)applicationDidFinishLaunching:(NSNotification *)aNotification
 {
-    // Insert code here to initialize your application
+    statusItem = [[NSStatusBar systemStatusBar] statusItemWithLength:28.0];
+    statusItem.image = [NSImage imageNamed:@"status_item_icon"];
+    statusItem.alternateImage = [NSImage imageNamed:@"status_item_icon_alt"];
+    statusItem.menu = statusItemMenu;
+    [statusItem setHighlightMode:YES];
+    
+    previousDeviceProxies = [NSMutableDictionary new];
 }
+
+
+- (void)applicationDidBecomeActive:(NSNotification *)notification {
+    if ([proxiesArrayController.content count] == 0) {
+        [self showMainWindow:nil];
+    }
+}
+
+
+#pragma mark - Menu delegate
+
+- (void)menuNeedsUpdate:(NSMenu *)menu {
+    while (![menu.itemArray[2] isSeparatorItem]) {
+        [menu removeItemAtIndex:2];
+    }
+    
+    BOOL hasProxies = NO;
+    
+    for (ProxyInfo *proxy in [proxiesArrayController.content reverseObjectEnumerator]) {
+        if (proxy.name.length > 0 && proxy.address.length > 0) {
+            NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:proxy.name action:@selector(setProxyWithMenuItem:) keyEquivalent:@""];
+            menuItem.target = self;
+            menuItem.representedObject = proxy;
+            
+            if (self.selectedProxy == proxy) {
+                [menuItem setState:NSOnState];
+            }
+            
+            [menu insertItem:menuItem atIndex:2];
+            hasProxies = YES;
+        }
+    }
+    
+    if (!hasProxies) {
+        NSMenuItem *menuItem = [[NSMenuItem alloc] initWithTitle:@"No Proxies" action:NULL keyEquivalent:@""];
+        [menuItem setEnabled:NO];
+        [menu insertItem:menuItem atIndex:2];
+    }
+    
+    [menu.itemArray[0] setState:(self.selectedProxy != nil ? NSOffState : NSOnState)];
+}
+
+#pragma mark - Actions
+
+- (IBAction)quitApp:(id)sender {
+    if ([self applicationShouldTerminate:NSApp] == NSTerminateNow) {
+        [NSApp terminate:nil];
+    }
+}
+
+
+- (IBAction)setProxyWithMenuItem:(id)sender {
+    self.selectedProxy = [sender representedObject];
+}
+
+
+- (IBAction)useDirectConnection:(id)sender {
+    self.selectedProxy = nil;
+}
+
+
+- (IBAction)useSelectedProxy:(id)sender {
+    if (proxiesArrayController.selectedObjects.count > 0) {
+        self.selectedProxy = proxiesArrayController.selectedObjects.lastObject;
+    }
+}
+
+
+- (IBAction)showMainWindow:(id)sender {
+    [NSApp activateIgnoringOtherApps:YES];
+    [self.window orderFront:nil];
+}
+
+
+#pragma mark - NSWindow delegate
+
+- (BOOL)windowShouldClose:(id)sender {
+    [self.window orderOut:nil];
+    return NO;
+}
+
+
+#pragma mark - Properties
+
+- (NSArray *)proxyTypes {
+    return @[@"SOCKS", @"HTTP", @"PAC"];
+}
+
+
+- (void)setSelectedProxy:(ProxyInfo *)selectedProxy {
+    if (_selectedProxy != selectedProxy) {
+        _selectedProxy = selectedProxy;
+        
+        [self toggleSystemProxy:(selectedProxy != nil)];
+    }
+}
+
+
+#pragma mark - Modify System Proxy
+
+- (NSString *)proxiesPathOfDevice:(NSString *)devId {
+    NSString *path = [NSString stringWithFormat:@"/%@/%@/%@", kSCPrefNetworkServices, devId, kSCEntNetProxies];
+    return path;
+}
+
+
+//! 修改代理设置的字典
+- (void)modifyPrefProxiesDictionary:(NSMutableDictionary *)proxies withProxyEnabled:(BOOL)enabled {
+    // 先禁用所有代理，防止之前已经设置过一些会导致冲突
+    [proxies setObject:[NSNumber numberWithInt:0] forKey:(NSString *)kCFNetworkProxiesHTTPEnable];
+    [proxies setObject:[NSNumber numberWithInt:0] forKey:(NSString *)kCFNetworkProxiesHTTPSEnable];
+    [proxies setObject:[NSNumber numberWithInt:0] forKey:(NSString *)kCFNetworkProxiesProxyAutoConfigEnable];
+    [proxies setObject:[NSNumber numberWithInt:0] forKey:(NSString *)kCFNetworkProxiesSOCKSEnable];
+    
+    if (enabled) {
+        NSInteger proxyPort = [self.selectedProxy.port intValue];
+        NSString *proxyAddress = self.selectedProxy.address;
+        NSString *proxyType = self.selectedProxy.type;
+        
+        if ([proxyType isEqualToString:kProxyPAC]) {
+            // 使用 PAC
+            [proxies setObject:proxyAddress forKey:(NSString *)kCFNetworkProxiesProxyAutoConfigURLString];
+            [proxies setObject:[NSNumber numberWithInt:1] forKey:(NSString *)kCFNetworkProxiesProxyAutoConfigEnable];
+            
+        } else if ([proxyType isEqualToString:kProxyHTTP]) {
+            // 使用 HTTP 代理
+            [proxies setObject:[NSNumber numberWithInteger:proxyPort] forKey:(NSString *)kCFNetworkProxiesHTTPPort];
+            [proxies setObject:@"127.0.0.1" forKey:(NSString *)kCFNetworkProxiesHTTPProxy];
+            [proxies setObject:[NSNumber numberWithInt:1] forKey:(NSString *)kCFNetworkProxiesHTTPEnable];
+            [proxies setObject:[NSNumber numberWithInteger:proxyPort] forKey:(NSString *)kCFNetworkProxiesHTTPSPort];
+            [proxies setObject:@"127.0.0.1" forKey:(NSString *)kCFNetworkProxiesHTTPSProxy];
+            [proxies setObject:[NSNumber numberWithInt:1] forKey:(NSString *)kCFNetworkProxiesHTTPSEnable];
+            
+        } else if ([proxyType isEqualToString:kProxySOCKS]) {
+            // 使用 SOCKS 代理
+            [proxies setObject:[NSNumber numberWithInteger:proxyPort] forKey:(NSString *)kCFNetworkProxiesSOCKSPort];
+            [proxies setObject:@"127.0.0.1" forKey:(NSString *)kCFNetworkProxiesSOCKSProxy];
+            [proxies setObject:[NSNumber numberWithInt:1] forKey:(NSString *)kCFNetworkProxiesSOCKSEnable];
+        }
+    }
+}
+
+
+- (void)toggleSystemProxy:(BOOL)useProxy {
+    if (authRef == NULL) {
+        
+        authFlags = kAuthorizationFlagDefaults
+                        | kAuthorizationFlagExtendRights
+                        | kAuthorizationFlagInteractionAllowed
+                        | kAuthorizationFlagPreAuthorize;
+        OSStatus authErr = AuthorizationCreate(nil, kAuthorizationEmptyEnvironment, authFlags, &authRef);
+        if (authErr != noErr) {
+            authRef = nil;
+            NSLog(@"No authorization has been granted to modify network configuration");
+            return;
+        }
+    }
+    
+    SCPreferencesRef prefRef = SCPreferencesCreateWithAuthorization(nil, CFSTR("GoAgentX"), nil, authRef);
+    
+    NSDictionary *sets = (__bridge NSDictionary *)SCPreferencesGetValue(prefRef, kSCPrefNetworkServices);
+    
+    // 遍历系统中的网络设备列表，设置 AirPort 和 Ethernet 的代理
+    if (previousDeviceProxies.count == 0) {
+        for (NSString *key in [sets allKeys]) {
+            NSMutableDictionary *dict = [sets objectForKey:key];
+            NSString *hardware = [dict valueForKeyPath:@"Interface.Hardware"];
+            if ([hardware isEqualToString:@"AirPort"] || [hardware isEqualToString:@"Ethernet"]) {
+                NSDictionary *proxies = [dict objectForKey:(NSString *)kSCEntNetProxies];
+                if (proxies != nil) {
+                    [previousDeviceProxies setObject:[proxies mutableCopy] forKey:key];
+                }
+            }
+        }
+    }
+    
+    if (useProxy) {
+        // 如果已经获取了旧的代理设置就直接用之前获取的，防止第二次获取到设置过的代理
+        for (NSString *deviceId in previousDeviceProxies) {
+            CFDictionaryRef proxies = SCPreferencesPathGetValue(prefRef, (__bridge CFStringRef)[self proxiesPathOfDevice:deviceId]);
+            [self modifyPrefProxiesDictionary:(__bridge NSMutableDictionary *)proxies withProxyEnabled:YES];
+            SCPreferencesPathSetValue(prefRef, (__bridge CFStringRef)[self proxiesPathOfDevice:deviceId], proxies);
+        }
+        
+    } else {
+        for (NSString *deviceId in previousDeviceProxies) {
+            // 防止之前获取的代理配置还是启用了 SOCKS 代理或者 PAC 的，直接将两种代理方式禁用
+            NSMutableDictionary *dict = [previousDeviceProxies objectForKey:deviceId];
+            [self modifyPrefProxiesDictionary:dict withProxyEnabled:NO];
+            SCPreferencesPathSetValue(prefRef, (__bridge CFStringRef)[self proxiesPathOfDevice:deviceId], (__bridge CFDictionaryRef)dict);
+        }
+        
+        [previousDeviceProxies removeAllObjects];
+    }
+    
+    SCPreferencesCommitChanges(prefRef);
+    SCPreferencesApplyChanges(prefRef);
+    SCPreferencesSynchronize(prefRef);
+}
+
+
+#pragma mark - Core Data
 
 // Returns the directory the application uses to store the Core Data store file. This code uses a directory named "com.xujiwei.ProxyMenu" in the user's Application Support directory.
 - (NSURL *)applicationFilesDirectory
 {
     NSFileManager *fileManager = [NSFileManager defaultManager];
     NSURL *appSupportURL = [[fileManager URLsForDirectory:NSApplicationSupportDirectory inDomains:NSUserDomainMask] lastObject];
-    return [appSupportURL URLByAppendingPathComponent:@"com.xujiwei.ProxyMenu"];
+    return [appSupportURL URLByAppendingPathComponent:@"ProxyMenu"];
 }
 
 // Creates if necessary and returns the managed object model for the application.

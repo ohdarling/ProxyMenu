@@ -165,7 +165,7 @@ static AuthorizationFlags authFlags;
         NSString *proxyAddress = self.selectedProxy.address;
         NSString *proxyType = self.selectedProxy.type;
         
-        if ([proxyType isEqualToString:kProxyPAC]) {
+        if (proxyType == nil || [proxyType isEqualToString:kProxyPAC]) {
             // 使用 PAC
             [proxies setObject:proxyAddress forKey:(NSString *)kCFNetworkProxiesProxyAutoConfigURLString];
             [proxies setObject:[NSNumber numberWithInt:1] forKey:(NSString *)kCFNetworkProxiesProxyAutoConfigEnable];

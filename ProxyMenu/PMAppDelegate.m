@@ -120,6 +120,14 @@ static AuthorizationFlags authFlags;
 }
 
 
+- (IBAction)refreshCurrentProxy:(id)sender {
+    ProxyInfo *proxy = self.selectedProxy;
+    self.selectedProxy = nil;
+    [NSThread sleepForTimeInterval:0.1];
+    self.selectedProxy = proxy;
+}
+
+
 #pragma mark - NSWindow delegate
 
 - (BOOL)windowShouldClose:(id)sender {
